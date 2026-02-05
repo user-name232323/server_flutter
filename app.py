@@ -19,6 +19,9 @@ def get_db_connection():
     conn = psycopg2.connect(**DB_CONFIG)
     return conn
 
+# Для хранения текущих звонков в памяти сервера (для простоты, лучше сделать через БД или кеш)
+active_calls = {}
+
 @app.route("/register", methods=["POST"])
 def register():
     data = request.get_json()
@@ -86,6 +89,59 @@ def get_users():
     conn.close()
     users_list = [{"id": user[0], "username": user[1]} for user in users]
     return jsonify(users_list), 200
+
+
+@app.route('/call', methods=['POST'])
+def start_call():
+    data = request.get_json()
+    caller = data.get('from')
+    callee = data.get('to')
+
+    if not caller or not callee:
+        return jsonify({"error": "Both 'from' and 'to' fields required"}), 400
+
+    # Сохраняем активный звонок — кто звонит кому
+    active_calls[callee] = caller
+    return jsonify({"message": f"Calling {callee} from {caller}"}), 200
+
+
+@app.route('/incoming-call', methods=['GET'])
+def incoming_call():
+    user = request.args.get('user')
+    if not user:
+        return jsonify({"error": "User query param required"}), 400
+
+    caller = active_calls.get(user)
+    if caller:
+        return jsonify({"calling": True, "from": caller}), 200
+    else:
+        return jsonify({"calling": False}), 200
+
+
+@app.route('/decline-call', methods=['POST'])
+def decline_call():
+    data = request.get_json()
+    callee = data.get('user')
+    if not callee:
+        return jsonify({"error": "'user' field required"}), 400
+
+    # Удаляем звонок при отклонении
+    if callee in active_calls:
+        del active_calls[callee]
+    return jsonify({"message": "Call declined"}), 200
+
+
+@app.route('/end-call', methods=['POST'])
+def end_call():
+    data = request.get_json()
+    callee = data.get('user')
+    if not callee:
+        return jsonify({"error": "'user' field required"}), 400
+
+    # Удаляем звонок при завершении
+    if callee in active_calls:
+        del active_calls[callee]
+    return jsonify({"message": "Call ended"}), 200
 
 
 if __name__ == "__main__":
