@@ -75,5 +75,18 @@ def login():
 
     return jsonify({"message": "Login successful"}), 200
 
+
+@app.route('/users', methods=['GET'])
+def get_users():
+    conn = get_db_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT id, username FROM users")
+    users = cur.fetchall()
+    cur.close()
+    conn.close()
+    users_list = [{"id": user[0], "username": user[1]} for user in users]
+    return jsonify(users_list), 200
+
+
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
