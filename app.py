@@ -2,9 +2,11 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
+from flask_socketio import SocketIO, emit
 
 app = Flask(__name__)
 CORS(app)
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # Конфигурация базы (замени на свои реальные данные)
 DB_CONFIG = {
@@ -19,8 +21,7 @@ def get_db_connection():
     conn = psycopg2.connect(**DB_CONFIG)
     return conn
 
-# Для хранения текущих звонков в памяти сервера (для простоты, лучше сделать через БД или кеш)
-active_calls = {}
+connected_users = {}  # username -> sid
 
 @app.route("/register", methods=["POST"])
 def register():
@@ -91,58 +92,71 @@ def get_users():
     return jsonify(users_list), 200
 
 
-@app.route('/call', methods=['POST'])
-def start_call():
-    data = request.get_json()
-    caller = data.get('from')
-    callee = data.get('to')
+# --- WebSocket handlers ---
 
-    if not caller or not callee:
-        return jsonify({"error": "Both 'from' and 'to' fields required"}), 400
+@socketio.on('connect')
+def on_connect():
+    print(f"Client connected: {request.sid}")
 
-    # Сохраняем активный звонок — кто звонит кому
-    active_calls[callee] = caller
-    return jsonify({"message": f"Calling {callee} from {caller}"}), 200
+@socketio.on('disconnect')
+def on_disconnect():
+    disconnected_user = None
+    for user, sid in connected_users.items():
+        if sid == request.sid:
+            disconnected_user = user
+            break
+    if disconnected_user:
+        del connected_users[disconnected_user]
+        print(f"User disconnected: {disconnected_user}")
+    print(f"Client disconnected: {request.sid}")
 
+@socketio.on('register_user')
+def on_register_user(data):
+    username = data.get('username')
+    if username:
+        connected_users[username] = request.sid
+        print(f"User registered to socket: {username}")
 
-@app.route('/incoming-call', methods=['GET'])
-def incoming_call():
-    user = request.args.get('user')
-    if not user:
-        return jsonify({"error": "User query param required"}), 400
+@socketio.on('call_user')
+def on_call_user(data):
+    callee = data.get('callee')
+    caller = data.get('caller')
+    sid = connected_users.get(callee)
+    if sid:
+        emit('incoming_call', {'from': caller}, room=sid)
 
-    caller = active_calls.get(user)
-    if caller:
-        return jsonify({"calling": True, "from": caller}), 200
-    else:
-        return jsonify({"calling": False}), 200
+@socketio.on('answer_call')
+def on_answer_call(data):
+    caller = data.get('caller')
+    callee = data.get('callee')
+    sid = connected_users.get(caller)
+    if sid:
+        emit('call_answered', {'from': callee}, room=sid)
 
+@socketio.on('ice_candidate')
+def on_ice_candidate(data):
+    target = data.get('target')
+    candidate = data.get('candidate')
+    sid = connected_users.get(target)
+    if sid:
+        emit('ice_candidate', {'candidate': candidate}, room=sid)
 
-@app.route('/decline-call', methods=['POST'])
-def decline_call():
-    data = request.get_json()
-    callee = data.get('user')
-    if not callee:
-        return jsonify({"error": "'user' field required"}), 400
+@socketio.on('sdp_offer')
+def on_sdp_offer(data):
+    target = data.get('target')
+    sdp = data.get('sdp')
+    sid = connected_users.get(target)
+    if sid:
+        emit('sdp_offer', {'sdp': sdp}, room=sid)
 
-    # Удаляем звонок при отклонении
-    if callee in active_calls:
-        del active_calls[callee]
-    return jsonify({"message": "Call declined"}), 200
-
-
-@app.route('/end-call', methods=['POST'])
-def end_call():
-    data = request.get_json()
-    callee = data.get('user')
-    if not callee:
-        return jsonify({"error": "'user' field required"}), 400
-
-    # Удаляем звонок при завершении
-    if callee in active_calls:
-        del active_calls[callee]
-    return jsonify({"message": "Call ended"}), 200
+@socketio.on('sdp_answer')
+def on_sdp_answer(data):
+    target = data.get('target')
+    sdp = data.get('sdp')
+    sid = connected_users.get(target)
+    if sid:
+        emit('sdp_answer', {'sdp': sdp}, room=sid)
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
+    socketio.run(app, debug=True, host="0.0.0.0", port=5000)
